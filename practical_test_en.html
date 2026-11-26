@@ -431,6 +431,34 @@
       .option.dimmed {
         opacity: 0.55;
       }
+      .option.selected {
+        border-color: var(--accent);
+        background: var(--accent-soft);
+      }
+      .option.selected .opt-letter {
+        background: var(--accent);
+        color: #fff;
+      }
+      .confirm-btn {
+        align-self: flex-start;
+        margin-bottom: 24px;
+        padding: 12px 28px;
+        background: #2b6cb0;
+        color: #fff;
+        border: none;
+        border-radius: 10px;
+        font-size: 15px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .confirm-btn:hover:not(:disabled) {
+        background: #2c5282;
+      }
+      .confirm-btn:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
 
       /* Dark-theme overrides to ensure readable option text/background */
       body.dark-theme .option {
@@ -471,6 +499,10 @@
       }
       body.dark-theme .option.dimmed {
         opacity: 0.55;
+      }
+      body.dark-theme .option.selected {
+        background: var(--accent-soft);
+        border-color: var(--accent);
       }
 
       /* Explanation */
@@ -4965,6 +4997,7 @@
         set: 1,
         current: 0,
         answers: { 1: {}, 2: {} },
+        pending: { 1: {}, 2: {} },
       };
 
       function questions() {
@@ -4973,6 +5006,36 @@
 
       function answers() {
         return state.answers[state.set];
+      }
+
+      function pending() {
+        return state.pending[state.set];
+      }
+
+      function isMulti(q) {
+        return Array.isArray(q.correct);
+      }
+
+      function isCorrectAnswer(q, ans) {
+        if (!isMulti(q)) return ans === q.correct;
+        return (
+          Array.isArray(ans) &&
+          ans.length === q.correct.length &&
+          q.correct.every((l) => ans.includes(l))
+        );
+      }
+
+      function letterList(ans) {
+        return Array.isArray(ans) ? ans.join(", ") : ans;
+      }
+
+      function optionTexts(q, ans) {
+        return [].concat(ans)
+          .map((l) => {
+            const o = q.options.find((x) => x.letter === l);
+            return o ? md(o.text) : "";
+          })
+          .join("; ");
       }
 
       function setSet(n) {
@@ -5035,7 +5098,7 @@
           const ans = answers()[q.global_n];
           if (ans !== undefined) {
             btn.classList.add(
-              ans === q.correct ? "answered-correct" : "answered-wrong",
+              isCorrectAnswer(q, ans) ? "answered-correct" : "answered-wrong",
             );
           }
         });
@@ -5048,6 +5111,10 @@
         const q = questions()[idx];
         const chosen = answers()[q.global_n];
         const locked = chosen !== undefined;
+        const multi = isMulti(q);
+        const picks = locked
+          ? [].concat(chosen)
+          : pending()[q.global_n] || [];
 
         document.getElementById("qCounter").textContent =
           idx + 1 + " / " + questions().length;
@@ -5061,8 +5128,10 @@
             if (locked) {
               cls += " locked";
               if (opt.correct) cls += " correct";
-              else if (opt.letter === chosen) cls += " wrong";
+              else if (picks.includes(opt.letter)) cls += " wrong";
               else cls += " dimmed";
+            } else if (picks.includes(opt.letter)) {
+              cls += " selected";
             }
             return (
               '<div class="' +
@@ -5084,9 +5153,22 @@
           })
           .join("");
 
+        const need = multi ? q.correct.length : 1;
+        const confirmHtml = !locked
+          ? '<button class="confirm-btn" onclick="confirmAnswer(' +
+              q.global_n +
+              ')"' +
+              (picks.length === need ? "" : " disabled") +
+              ">Check answer" +
+              (multi ? " (" + picks.length + " / " + need + " selected)" : "") +
+              "</button>"
+          : idx === questions().length - 1
+            ? '<button class="confirm-btn" onclick="showSummary()">Finish</button>'
+            : '<button class="confirm-btn" onclick="navigate(1)">Next</button>';
+
         const expl = locked
           ? '<div class="explanation show"><strong>Why ' +
-            q.correct +
+            letterList(q.correct) +
             ":</strong> " +
             md(q.explanation) +
             "</div>"
@@ -5108,12 +5190,30 @@
           '<div class="options">' +
           optionsHtml +
           "</div>" +
+          confirmHtml +
           expl;
       }
 
       function answer(globalN, letter) {
         if (answers()[globalN] !== undefined) return;
-        answers()[globalN] = letter;
+        const q = questions().find((x) => x.global_n === globalN);
+        const cur = pending()[globalN] || [];
+        if (!isMulti(q)) {
+          pending()[globalN] = cur.includes(letter) ? [] : [letter];
+        } else if (cur.includes(letter)) {
+          pending()[globalN] = cur.filter((l) => l !== letter);
+        } else if (cur.length < q.correct.length) {
+          pending()[globalN] = cur.concat(letter);
+        }
+        renderQuestion(state.current);
+      }
+
+      function confirmAnswer(globalN) {
+        const q = questions().find((x) => x.global_n === globalN);
+        const picks = pending()[globalN] || [];
+        const need = isMulti(q) ? q.correct.length : 1;
+        if (answers()[globalN] !== undefined || picks.length !== need) return;
+        answers()[globalN] = isMulti(q) ? picks.slice().sort() : picks[0];
         renderQuestion(state.current);
         updateSidebar();
       }
@@ -5143,7 +5243,7 @@
         questions().forEach((q) => {
           const ans = answers()[q.global_n];
           if (ans === undefined) return;
-          if (ans === q.correct) {
+          if (isCorrectAnswer(q, ans)) {
             correct++;
           } else {
             if (!wrongByScenario[q.scenario]) wrongByScenario[q.scenario] = [];
@@ -5160,12 +5260,6 @@
           const items = wrongByScenario[scenario];
           const rows = items
             .map((item) => {
-              const chosenOpt = item.q.options.find(
-                (o) => o.letter === item.chosen,
-              );
-              const correctOpt = item.q.options.find(
-                (o) => o.letter === item.q.correct,
-              );
               return (
                 '<div class="wrong-item">' +
                 '<div class="wi-n">Q' +
@@ -5180,14 +5274,14 @@
                 "</div>" +
                 '<div class="wi-ans">' +
                 'Your answer: <span class="wi-wrong-tag">' +
-                item.chosen +
+                letterList(item.chosen) +
                 "</span> — " +
-                md(chosenOpt ? chosenOpt.text : "") +
+                optionTexts(item.q, item.chosen) +
                 "<br>" +
                 'Correct: <span class="wi-correct-tag">' +
-                item.q.correct +
+                letterList(item.q.correct) +
                 "</span> — " +
-                md(correctOpt ? correctOpt.text : "") +
+                optionTexts(item.q, item.q.correct) +
                 "</div>" +
                 "</div></div>"
               );
@@ -5239,6 +5333,7 @@
 
       function restart() {
         state.answers[state.set] = {};
+        state.pending[state.set] = {};
         state.current = 0;
         document.getElementById("questionScreen").classList.add("active");
         document.getElementById("summaryScreen").classList.remove("active");
